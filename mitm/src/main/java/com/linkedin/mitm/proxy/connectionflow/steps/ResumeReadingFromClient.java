@@ -23,6 +23,6 @@ public class ResumeReadingFromClient implements ConnectionFlowStep {
   @Override
   public Future execute(ChannelMediator channelMediator, InetSocketAddress remoteAddress) {
     LOG.debug("Resume reading from client");
-    return channelMediator.resumeReadingFromClientChannel();
+    return channelMediator.changeReadingFromClientChannel(true);
   }
 }

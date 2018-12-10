@@ -58,6 +58,13 @@ public class ClientChannelHandler extends SimpleChannelInboundHandler<HttpObject
   }
 
   @Override
+  public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+    _channelMediator.writeAllToClientIfPossible();
+    _channelMediator.changeReadingFromServerChannel(ctx.channel().isWritable());
+    super.channelWritabilityChanged(ctx);
+  }
+
+  @Override
   public void channelRegistered(ChannelHandlerContext ctx)
       throws Exception {
     _channelMediator.registerChannel(ctx.channel());

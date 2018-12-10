@@ -23,6 +23,6 @@ public class StopReadingFromClient implements ConnectionFlowStep {
   @Override
   public Future execute(ChannelMediator channelMediator, InetSocketAddress remoteAddress) {
     LOG.info("Stop reading from client");
-    return channelMediator.stopReadingFromClientChannel();
+    return channelMediator.changeReadingFromClientChannel(false);
   }
 }

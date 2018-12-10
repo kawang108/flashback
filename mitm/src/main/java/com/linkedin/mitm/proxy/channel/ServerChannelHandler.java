@@ -12,6 +12,7 @@ import io.netty.handler.codec.http.DefaultLastHttpContent;
 import io.netty.handler.codec.http.HttpObject;
 import org.apache.log4j.Logger;
 
+
 /**
  * Server channel handler that implemented read logic from server side.
  * Note: It's stateful. Each {@link com.linkedin.mitm.proxy.channel.ClientChannelHandler} map to one
@@ -30,7 +31,7 @@ public class ServerChannelHandler extends SimpleChannelInboundHandler<HttpObject
   }
 
   @Override
-  protected void channelRead0(ChannelHandlerContext channelHandlerContext, HttpObject httpObject)
+  protected void channelRead0(ChannelHandlerContext ctx, HttpObject httpObject)
       throws Exception {
     _channelMediator.readFromServerChannel(httpObject);
     if (httpObject instanceof DefaultLastHttpContent) {
@@ -46,6 +47,13 @@ public class ServerChannelHandler extends SimpleChannelInboundHandler<HttpObject
     _channelMediator.registerChannel(ctx.channel());
     LOG.debug("server channel registered" + ctx.channel());
     super.channelRegistered(ctx);
+  }
+
+  @Override
+  public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+    _channelMediator.writeAllToServerIfPossible();
+    _channelMediator.changeReadingFromClientChannel(ctx.channel().isWritable());
+    super.channelWritabilityChanged(ctx);
   }
 
   @Override

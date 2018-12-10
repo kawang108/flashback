@@ -20,12 +20,18 @@ import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpRequestEncoder;
 import io.netty.handler.codec.http.HttpResponseDecoder;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.timeout.IdleStateHandler;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.ReferenceCounted;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import java.net.InetSocketAddress;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
 import javax.net.ssl.SSLEngine;
 import org.apache.log4j.Logger;
 
@@ -48,6 +54,7 @@ public class ChannelMediator {
   private final Channel _clientChannel;
   private final ChannelGroup _allChannelGroup;
   private Channel _serverChannel;
+  private final Map<Channel, List<HttpObject>> _buffers;
 
   public ChannelMediator(Channel clientChannel, final ProxyModeControllerFactory proxyModeControllerFactory,
       final NioEventLoopGroup upstreamWorkerGroup, final int timeout, final ChannelGroup channelGroup) {
@@ -56,6 +63,7 @@ public class ChannelMediator {
     _upstreamWorkerGroup = upstreamWorkerGroup;
     _serverConnectionIdleTimeoutMsec = timeout;
     _allChannelGroup = channelGroup;
+    _buffers = new HashMap<>();
   }
 
   public void initializeProxyModeController(HttpRequest initialRequest) {
@@ -137,6 +145,7 @@ public class ChannelMediator {
       protected void initChannel(Channel ch)
           throws Exception {
         initChannelPipeline(ch.pipeline(), serverChannelHandler, _serverConnectionIdleTimeoutMsec);
+        ch.pipeline().addFirst(new FlushConsolidationHandler());
         _serverChannel = ch;
       }
     });
@@ -176,20 +185,36 @@ public class ChannelMediator {
     return handshake(sslEngine, false, _clientChannel);
   }
 
-  public ChannelFuture resumeReadingFromClientChannel() {
-    if (_clientChannel == null) {
-      throw new IllegalStateException("Channel can't be null");
-    }
-    _clientChannel.config().setAutoRead(true);
-    return _clientChannel.newSucceededFuture();
+  public ChannelFuture changeReadingFromClientChannel(boolean isRead) {
+    return changeReadingFromChannel(_clientChannel, isRead);
   }
 
-  public ChannelFuture stopReadingFromClientChannel() {
-    if (_clientChannel == null) {
+  public ChannelFuture changeReadingFromServerChannel(boolean isRead) {
+    return changeReadingFromChannel(_serverChannel, isRead);
+  }
+
+  private ChannelFuture changeReadingFromChannel(Channel channel, boolean isRead) {
+    if (channel == null) {
       throw new IllegalStateException("Channel can't be null");
     }
-    _clientChannel.config().setAutoRead(false);
-    return _clientChannel.newSucceededFuture();
+    channel.config().setAutoRead(isRead);
+    return channel.newSucceededFuture();
+  }
+
+  public void writeAllToServerIfPossible() {
+    writeBufferToChannelIfPossible(_serverChannel);
+  }
+
+  public void writeAllToClientIfPossible() {
+    writeBufferToChannelIfPossible(_clientChannel);
+  }
+
+  private void writeBufferToChannelIfPossible(Channel channel) {
+    List<HttpObject> channelBuffer = _buffers.getOrDefault(channel, new LinkedList<>());
+    while (channel.isWritable() && !channelBuffer.isEmpty()) {
+      HttpObject payload = channelBuffer.remove(0);
+      writeToChannel(channel, payload);
+    }
   }
 
   /**
@@ -230,16 +255,24 @@ public class ChannelMediator {
    * */
   private ChannelFuture writeToChannel(final Channel channel, final Object object) {
     if (channel == null) {
-      throw new IllegalStateException("Failed to write to channel because channel is null");
+      ReferenceCountUtil.safeRelease(object);
+      new IllegalStateException("Failed to write to channel because channel is null");
     }
-    if (object instanceof ReferenceCounted) {
-      LOG.debug("Retaining reference counted message");
-      ((ReferenceCounted) object).retain();
+    if (!channel.isActive()) {
+      ReferenceCountUtil.safeRelease(object);
+      return channel.newFailedFuture(new IllegalStateException("Failed to write to channel because it's closed"));
     }
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(String.format("Writing in channel [%s]:  %s", channel.toString(), object));
+    ReferenceCountUtil.retain(object);
+
+    LOG.debug(String.format("Writing in channel [%s]:  %s", channel.toString(), object));
+
+    if (channel.isWritable()) {
+      return channel.writeAndFlush(object);
+    } else {
+      List<HttpObject> buffer = _buffers.getOrDefault(channel, new LinkedList<>());
+      buffer.add((HttpObject) object);
+      return channel.newSucceededFuture();
     }
-    return channel.writeAndFlush(object);
   }
 
   private Future<Void> disconnect(final Channel channel) {
